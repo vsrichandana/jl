@@ -1,24 +1,29 @@
 import os
+import traceback
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.runnables import RunnableLambda
-
 from langserve import add_routes
 
 
 # ============================================================
-# API KEY
+# GOOGLE API KEY
 # ============================================================
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
-if not GOOGLE_API_KEY:
-    raise RuntimeError(
-        "GOOGLE_API_KEY is missing in Render Environment Variables."
-    )
+print("====================================")
+print("GOOGLE API KEY CHECK")
+print("====================================")
+
+if GOOGLE_API_KEY:
+    print("GOOGLE_API_KEY exists")
+    print("Key length:", len(GOOGLE_API_KEY))
+else:
+    print("GOOGLE_API_KEY DOES NOT EXIST")
 
 
 # ============================================================
@@ -33,7 +38,7 @@ llm = ChatGoogleGenerativeAI(
 
 
 # ============================================================
-# PLAYGROUND INPUT
+# INPUT / OUTPUT
 # ============================================================
 
 class InputData(BaseModel):
@@ -45,14 +50,54 @@ class OutputData(BaseModel):
 
 
 # ============================================================
-# TEST FUNCTION
+# TEST GEMINI
 # ============================================================
 
-def run_agent(data: InputData) -> OutputData:
+@app_placeholder = None
 
-    print("Received request:", data.task)
+
+def test_gemini():
 
     try:
+
+        print("Calling Gemini...")
+
+        response = llm.invoke(
+            "Say hello in one short sentence."
+        )
+
+        print("Gemini response:")
+        print(response)
+
+        return {
+            "status": "success",
+            "response": str(response.content)
+        }
+
+    except Exception as error:
+
+        print("====================================")
+        print("GEMINI ERROR")
+        print("====================================")
+
+        traceback.print_exc()
+
+        return {
+            "status": "error",
+            "error_type": type(error).__name__,
+            "error": str(error)
+        }
+
+
+# ============================================================
+# RUNNABLE
+# ============================================================
+
+def run_agent(data: InputData):
+
+    try:
+
+        print("Received:", data.task)
 
         response = llm.invoke(
             data.task
@@ -64,23 +109,23 @@ def run_agent(data: InputData) -> OutputData:
             output=str(response.content)
         )
 
-    except Exception as e:
+    except Exception as error:
 
-        print(
-            "GEMINI ERROR:",
-            repr(e)
-        )
+        print("====================================")
+        print("RUN AGENT ERROR")
+        print("====================================")
+
+        traceback.print_exc()
 
         return OutputData(
-            output=
-            "Gemini Error: "
-            + str(e)
+            output=(
+                "GEMINI ERROR: "
+                + type(error).__name__
+                + ": "
+                + str(error)
+            )
         )
 
-
-# ============================================================
-# RUNNABLE
-# ============================================================
 
 runnable = RunnableLambda(
     run_agent
@@ -95,9 +140,19 @@ runnable = RunnableLambda(
 # ============================================================
 
 app = FastAPI(
-    title="Gemini Render Test",
+    title="Gemini Render Diagnostic",
     version="1.0"
 )
+
+
+# ============================================================
+# GEMINI DIRECT TEST
+# ============================================================
+
+@app.get("/test-gemini")
+def test_gemini_endpoint():
+
+    return test_gemini()
 
 
 # ============================================================
@@ -121,9 +176,7 @@ def root():
 
     return {
         "status": "running",
-        "message": "Gemini Render application is running",
-        "playground": "/agent/playground/",
-        "health": "/health"
+        "message": "Gemini diagnostic application"
     }
 
 
@@ -159,4 +212,3 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port
     )
-
