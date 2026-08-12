@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pydantic
+langchain
+langchain-core
+langchain-google-genai
+langgraph
+langserve
+sse-starlette
+chromadb

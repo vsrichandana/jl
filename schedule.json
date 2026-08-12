@@ -1,0 +1,102 @@
+[
+    {
+        "id": "event-001",
+        "title": "Team Standup",
+        "type": "meeting",
+        "date": "2026-08-12",
+        "start_time": "10:00",
+        "end_time": "10:30",
+        "location": "Online",
+        "description": "Daily project status meeting."
+    },
+    {
+        "id": "event-002",
+        "title": "DSA Practice",
+        "type": "task",
+        "date": "2026-08-13",
+        "start_time": "09:00",
+        "end_time": "10:00",
+        "location": "Hostel",
+        "description": "Practice arrays and sliding window problems."
+    },
+    {
+        "id": "event-003",
+        "title": "AI Workshop",
+        "type": "workshop",
+        "date": "2026-08-14",
+        "start_time": "14:00",
+        "end_time": "17:00",
+        "location": "College Lab",
+        "description": "Hands-on workshop about Agentic AI and RAG."
+    },
+    {
+        "id": "event-004",
+        "title": "Project Meeting",
+        "type": "meeting",
+        "date": "2026-08-15",
+        "start_time": "14:00",
+        "end_time": "15:00",
+        "location": "Online",
+        "description": "Discuss major project progress."
+    },
+    {
+        "id": "event-005",
+        "title": "Doctor Appointment",
+        "type": "appointment",
+        "date": "2026-08-17",
+        "start_time": "11:00",
+        "end_time": "12:00",
+        "location": "City Clinic",
+        "description": "Regular appointment."
+    },
+    {
+        "id": "event-006",
+        "title": "Java Practice",
+        "type": "task",
+        "date": "2026-08-19",
+        "start_time": "18:00",
+        "end_time": "19:30",
+        "location": "Hostel",
+        "description": "Practice Java collections and DSA."
+    },
+    {
+        "id": "event-007",
+        "title": "Cloud Workshop",
+        "type": "workshop",
+        "date": "2026-08-22",
+        "start_time": "10:00",
+        "end_time": "13:00",
+        "location": "College",
+        "description": "Introduction to cloud deployment."
+    },
+    {
+        "id": "event-008",
+        "title": "Project Review",
+        "type": "meeting",
+        "date": "2026-08-26",
+        "start_time": "15:00",
+        "end_time": "16:00",
+        "location": "Online",
+        "description": "Review Agentic RAG implementation."
+    },
+    {
+        "id": "event-009",
+        "title": "Assignment Submission",
+        "type": "task",
+        "date": "2026-09-01",
+        "start_time": "12:00",
+        "end_time": "13:00",
+        "location": "College Portal",
+        "description": "Submit the AI project assignment."
+    },
+    {
+        "id": "event-010",
+        "title": "Career Workshop",
+        "type": "workshop",
+        "date": "2026-09-06",
+        "start_time": "16:00",
+        "end_time": "18:00",
+        "location": "Seminar Hall",
+        "description": "Resume and interview preparation."
+    }
+]
