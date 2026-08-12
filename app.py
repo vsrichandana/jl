@@ -10,24 +10,21 @@ from langserve import add_routes
 
 
 # ============================================================
-# GOOGLE API KEY
+# 1. GOOGLE API KEY
 # ============================================================
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
-print("====================================")
-print("GOOGLE API KEY CHECK")
-print("====================================")
+if not GOOGLE_API_KEY:
+    raise RuntimeError(
+        "GOOGLE_API_KEY is missing."
+    )
 
-if GOOGLE_API_KEY:
-    print("GOOGLE_API_KEY exists")
-    print("Key length:", len(GOOGLE_API_KEY))
-else:
-    print("GOOGLE_API_KEY DOES NOT EXIST")
+print("GOOGLE_API_KEY found.")
 
 
 # ============================================================
-# GEMINI
+# 2. GEMINI
 # ============================================================
 
 llm = ChatGoogleGenerativeAI(
@@ -38,7 +35,7 @@ llm = ChatGoogleGenerativeAI(
 
 
 # ============================================================
-# INPUT / OUTPUT
+# 3. INPUT / OUTPUT
 # ============================================================
 
 class InputData(BaseModel):
@@ -50,13 +47,10 @@ class OutputData(BaseModel):
 
 
 # ============================================================
-# TEST GEMINI
+# 4. DIRECT GEMINI TEST
 # ============================================================
 
-@app_placeholder = None
-
-
-def test_gemini():
+def call_gemini():
 
     try:
 
@@ -67,7 +61,7 @@ def test_gemini():
         )
 
         print("Gemini response:")
-        print(response)
+        print(response.content)
 
         return {
             "status": "success",
@@ -76,9 +70,9 @@ def test_gemini():
 
     except Exception as error:
 
-        print("====================================")
+        print("================================")
         print("GEMINI ERROR")
-        print("====================================")
+        print("================================")
 
         traceback.print_exc()
 
@@ -90,20 +84,38 @@ def test_gemini():
 
 
 # ============================================================
-# RUNNABLE
+# 5. GEMINI TEST ENDPOINT
 # ============================================================
 
-def run_agent(data: InputData):
+app = FastAPI(
+    title="Gemini Render Diagnostic",
+    version="1.0"
+)
+
+
+@app.get("/test-gemini")
+def test_gemini():
+
+    return call_gemini()
+
+
+# ============================================================
+# 6. LANGSERVE FUNCTION
+# ============================================================
+
+def run_agent(data: InputData) -> OutputData:
 
     try:
 
-        print("Received:", data.task)
+        print("Received request:")
+        print(data.task)
 
         response = llm.invoke(
             data.task
         )
 
-        print("Gemini response:", response.content)
+        print("Gemini response:")
+        print(response.content)
 
         return OutputData(
             output=str(response.content)
@@ -111,21 +123,25 @@ def run_agent(data: InputData):
 
     except Exception as error:
 
-        print("====================================")
+        print("================================")
         print("RUN AGENT ERROR")
-        print("====================================")
+        print("================================")
 
         traceback.print_exc()
 
         return OutputData(
             output=(
-                "GEMINI ERROR: "
+                "Gemini error: "
                 + type(error).__name__
                 + ": "
                 + str(error)
             )
         )
 
+
+# ============================================================
+# 7. CREATE RUNNABLE
+# ============================================================
 
 runnable = RunnableLambda(
     run_agent
@@ -136,27 +152,7 @@ runnable = RunnableLambda(
 
 
 # ============================================================
-# FASTAPI
-# ============================================================
-
-app = FastAPI(
-    title="Gemini Render Diagnostic",
-    version="1.0"
-)
-
-
-# ============================================================
-# GEMINI DIRECT TEST
-# ============================================================
-
-@app.get("/test-gemini")
-def test_gemini_endpoint():
-
-    return test_gemini()
-
-
-# ============================================================
-# LANGSERVE
+# 8. LANGSERVE
 # ============================================================
 
 add_routes(
@@ -168,7 +164,7 @@ add_routes(
 
 
 # ============================================================
-# ROOT
+# 9. ROOT
 # ============================================================
 
 @app.get("/")
@@ -176,12 +172,16 @@ def root():
 
     return {
         "status": "running",
-        "message": "Gemini diagnostic application"
+        "message": "Gemini Render Diagnostic",
+        "health": "/health",
+        "test_gemini": "/test-gemini",
+        "playground": "/agent/playground/",
+        "docs": "/docs"
     }
 
 
 # ============================================================
-# HEALTH
+# 10. HEALTH
 # ============================================================
 
 @app.get("/health")
@@ -193,7 +193,7 @@ def health():
 
 
 # ============================================================
-# START
+# 11. START SERVER
 # ============================================================
 
 if __name__ == "__main__":
