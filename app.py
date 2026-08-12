@@ -3,12 +3,7 @@ import json
 import uuid
 
 from datetime import datetime, timedelta
-from typing import (
-    TypedDict,
-    List,
-    Optional,
-    Annotated
-)
+from typing import TypedDict, List, Optional, Annotated
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -20,12 +15,9 @@ from langchain_core.messages import (
 )
 
 from langchain_core.tools import tool
-
 from langchain_core.runnables import RunnableLambda
 
-from langchain_google_genai import (
-    ChatGoogleGenerativeAI
-)
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langgraph.graph import (
     StateGraph,
@@ -41,7 +33,7 @@ import chromadb
 
 
 # ============================================================
-# 1. CONFIGURATION
+# 1. GOOGLE API KEY
 # ============================================================
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
@@ -52,22 +44,19 @@ if not GOOGLE_API_KEY:
     )
 
 
-# Current stable Gemini Flash-Lite model
-GEMINI_MODEL = "gemini-3.1-flash-lite"
-
-
 # ============================================================
-# 2. LLM
+# 2. GEMINI MODEL
 # ============================================================
 
 llm = ChatGoogleGenerativeAI(
-    model=GEMINI_MODEL,
-    google_api_key=GOOGLE_API_KEY
+    model="gemini-3.1-flash-lite-preview",
+    google_api_key=GOOGLE_API_KEY,
+    temperature=0
 )
 
 
 # ============================================================
-# 3. PATHS
+# 3. FILE LOCATIONS
 # ============================================================
 
 BASE_DIR = os.path.dirname(
@@ -96,34 +85,29 @@ class ScheduleState(TypedDict):
         add_messages
     ]
 
-    next_step: Optional[str]
+    user_query: str
 
-    user_query: Optional[str]
-
-    retrieved_schedule: Optional[str]
-
-    operation_result: Optional[str]
+    tool_result: Optional[str]
 
     final_answer: Optional[str]
 
-    last_tool: Optional[str]
-
 
 # ============================================================
-# 5. SAMPLE SCHEDULE
+# 5. CREATE SAMPLE SCHEDULE
 # ============================================================
 
-def create_initial_schedule():
+def create_sample_schedule():
 
     today = datetime.now().date()
 
     schedule = []
 
+
     def add_event(
         event_id,
         title,
         event_type,
-        day_offset,
+        days_from_today,
         start_time,
         end_time,
         location,
@@ -131,8 +115,10 @@ def create_initial_schedule():
     ):
 
         event_date = (
-            today + timedelta(days=day_offset)
+            today +
+            timedelta(days=days_from_today)
         ).isoformat()
+
 
         schedule.append({
 
@@ -165,6 +151,7 @@ def create_initial_schedule():
         "Daily project status meeting."
     )
 
+
     add_event(
         "event-002",
         "DSA Practice",
@@ -173,8 +160,9 @@ def create_initial_schedule():
         "09:00",
         "10:00",
         "Hostel",
-        "Practice arrays and sliding window problems."
+        "Practice arrays and sliding window."
     )
+
 
     add_event(
         "event-003",
@@ -184,8 +172,9 @@ def create_initial_schedule():
         "14:00",
         "17:00",
         "College Lab",
-        "Hands-on workshop about Agentic AI and RAG."
+        "Workshop about Agentic AI and RAG."
     )
+
 
     add_event(
         "event-004",
@@ -198,6 +187,7 @@ def create_initial_schedule():
         "Discuss major project progress."
     )
 
+
     add_event(
         "event-005",
         "Doctor Appointment",
@@ -209,6 +199,7 @@ def create_initial_schedule():
         "Regular appointment."
     )
 
+
     add_event(
         "event-006",
         "Java Practice",
@@ -217,8 +208,9 @@ def create_initial_schedule():
         "18:00",
         "19:30",
         "Hostel",
-        "Practice Java collections and DSA."
+        "Practice Java collections."
     )
+
 
     add_event(
         "event-007",
@@ -228,8 +220,9 @@ def create_initial_schedule():
         "10:00",
         "13:00",
         "College",
-        "Introduction to cloud deployment."
+        "Cloud deployment workshop."
     )
+
 
     add_event(
         "event-008",
@@ -239,8 +232,9 @@ def create_initial_schedule():
         "15:00",
         "16:00",
         "Online",
-        "Review Agentic RAG implementation."
+        "Review Agentic RAG project."
     )
+
 
     add_event(
         "event-009",
@@ -250,8 +244,9 @@ def create_initial_schedule():
         "12:00",
         "13:00",
         "College Portal",
-        "Submit the AI project assignment."
+        "Submit AI project assignment."
     )
+
 
     add_event(
         "event-010",
@@ -261,8 +256,9 @@ def create_initial_schedule():
         "16:00",
         "18:00",
         "Seminar Hall",
-        "Resume and interview preparation."
+        "Resume and interview workshop."
     )
+
 
     return schedule
 
@@ -273,9 +269,11 @@ def create_initial_schedule():
 
 def load_schedule():
 
-    if not os.path.exists(SCHEDULE_FILE):
+    if not os.path.exists(
+        SCHEDULE_FILE
+    ):
 
-        schedule = create_initial_schedule()
+        schedule = create_sample_schedule()
 
         with open(
             SCHEDULE_FILE,
@@ -288,6 +286,7 @@ def load_schedule():
                 file,
                 indent=4
             )
+
 
     with open(
         SCHEDULE_FILE,
@@ -318,73 +317,71 @@ def save_schedule(schedule):
 
 
 # ============================================================
-# 8. CHROMADB
+# 8. CHROMA DATABASE
 # ============================================================
 
 chroma_client = chromadb.PersistentClient(
     path=CHROMA_DIR
 )
 
-collection = chroma_client.get_or_create_collection(
-    name="schedule"
+
+try:
+
+    chroma_client.delete_collection(
+        name="schedule"
+    )
+
+except Exception:
+
+    pass
+
+
+collection = (
+    chroma_client
+    .get_or_create_collection(
+        name="schedule"
+    )
 )
 
 
 # ============================================================
-# 9. EVENT TO TEXT
+# 9. CONVERT EVENT TO TEXT
 # ============================================================
 
 def event_to_text(event):
 
     return (
 
-        f"Event ID: {event['id']}. "
-
         f"Title: {event['title']}. "
-
         f"Type: {event['type']}. "
-
         f"Date: {event['date']}. "
-
         f"Time: {event['start_time']} "
         f"to {event['end_time']}. "
-
         f"Location: {event['location']}. "
-
         f"Description: {event['description']}."
     )
 
 
 # ============================================================
-# 10. BUILD VECTOR DATABASE
+# 10. ADD SCHEDULE TO CHROMA
 # ============================================================
 
-def rebuild_vector_database():
-
-    global collection
-
-    try:
-
-        chroma_client.delete_collection(
-            name="schedule"
-        )
-
-    except Exception:
-
-        pass
-
-    collection = chroma_client.get_or_create_collection(
-        name="schedule"
-    )
+def build_vector_database():
 
     schedule = load_schedule()
 
+
     if not schedule:
+
         return
 
+
     documents = []
+
     ids = []
+
     metadatas = []
+
 
     for event in schedule:
 
@@ -398,14 +395,13 @@ def rebuild_vector_database():
 
         metadatas.append({
 
-            "date": event["date"],
+            "date":
+                event["date"],
 
-            "type": event["type"],
-
-            "start_time": event["start_time"],
-
-            "end_time": event["end_time"]
+            "type":
+                event["type"]
         })
+
 
     collection.add(
 
@@ -417,39 +413,39 @@ def rebuild_vector_database():
     )
 
 
-# ============================================================
-# 11. INITIALIZE VECTOR DATABASE
-# ============================================================
+# Build Chroma when server starts
 
-load_schedule()
-
-if collection.count() == 0:
-
-    rebuild_vector_database()
+build_vector_database()
 
 
 # ============================================================
-# 12. DATE NORMALIZATION
+# 11. NORMALIZE DATE
 # ============================================================
 
-def normalize_date(date_text):
+def normalize_date(value):
 
-    if not date_text:
+    if not value:
+
         return None
 
-    text = date_text.strip().lower()
+
+    value = value.strip().lower()
 
     today = datetime.now().date()
 
-    if text == "today":
+
+    if value == "today":
 
         return today.isoformat()
 
-    if text == "tomorrow":
+
+    if value == "tomorrow":
 
         return (
-            today + timedelta(days=1)
+            today +
+            timedelta(days=1)
         ).isoformat()
+
 
     weekdays = {
 
@@ -462,210 +458,66 @@ def normalize_date(date_text):
         "sunday": 6
     }
 
-    if text in weekdays:
 
-        target = weekdays[text]
+    if value in weekdays:
+
+        target = weekdays[value]
 
         days_ahead = (
-            target - today.weekday()
+            target -
+            today.weekday()
         ) % 7
 
         return (
-            today + timedelta(days=days_ahead)
+            today +
+            timedelta(days=days_ahead)
         ).isoformat()
 
+
     formats = [
+
         "%Y-%m-%d",
+
         "%B %d",
-        "%b %d"
+
+        "%b %d",
+
+        "%B %d %Y",
+
+        "%b %d %Y"
     ]
+
 
     for fmt in formats:
 
         try:
 
             parsed = datetime.strptime(
-                text,
+                value,
                 fmt
             )
 
-            if fmt != "%Y-%m-%d":
+
+            if "%Y" not in fmt:
 
                 parsed = parsed.replace(
                     year=today.year
                 )
 
+
             return parsed.date().isoformat()
 
-        except ValueError:
-
-            pass
-
-    return text
-
-
-# ============================================================
-# 13. TIME NORMALIZATION
-# ============================================================
-
-def normalize_time(time_text):
-
-    if not time_text:
-        return None
-
-    text = time_text.strip().upper()
-
-    formats = [
-        "%I %p",
-        "%I:%M %p",
-        "%H:%M"
-    ]
-
-    for fmt in formats:
-
-        try:
-
-            parsed = datetime.strptime(
-                text,
-                fmt
-            )
-
-            return parsed.strftime("%H:%M")
 
         except ValueError:
 
-            pass
-
-    return text
+            continue
 
 
-# ============================================================
-# 14. RETRIEVE SCHEDULE
-# ============================================================
-
-def retrieve_schedule(
-    query,
-    date=None,
-    event_type=None
-):
-
-    schedule = load_schedule()
-
-    normalized_date = normalize_date(date)
-
-    candidates = schedule
-
-    # Date filtering
-    if normalized_date:
-
-        candidates = [
-
-            event
-
-            for event in candidates
-
-            if event["date"] == normalized_date
-        ]
-
-
-    # Type filtering
-    if event_type:
-
-        candidates = [
-
-            event
-
-            for event in candidates
-
-            if event["type"].lower()
-            == event_type.lower()
-        ]
-
-
-    # Semantic retrieval using ChromaDB
-    try:
-
-        if collection.count() > 0:
-
-            result = collection.query(
-
-                query_texts=[query],
-
-                n_results=min(
-                    10,
-                    collection.count()
-                )
-            )
-
-            ids = (
-                result["ids"][0]
-                if result.get("ids")
-                else []
-            )
-
-            candidate_map = {
-
-                event["id"]: event
-
-                for event in candidates
-            }
-
-            semantic_results = [
-
-                candidate_map[event_id]
-
-                for event_id in ids
-
-                if event_id in candidate_map
-            ]
-
-            if semantic_results:
-
-                candidates = semantic_results
-
-    except Exception as error:
-
-        print(
-            "ChromaDB error:",
-            error
-        )
-
-    return candidates
+    return value
 
 
 # ============================================================
-# 15. FORMAT EVENTS
-# ============================================================
-
-def format_events(events):
-
-    if not events:
-
-        return (
-            "No matching schedule events found."
-        )
-
-    output = []
-
-    for event in events:
-
-        output.append(
-
-            f"ID: {event['id']}\n"
-            f"Title: {event['title']}\n"
-            f"Type: {event['type']}\n"
-            f"Date: {event['date']}\n"
-            f"Time: {event['start_time']} - "
-            f"{event['end_time']}\n"
-            f"Location: {event['location']}\n"
-            f"Description: {event['description']}"
-        )
-
-    return "\n\n".join(output)
-
-
-# ============================================================
-# 16. TOOL 1 - GET SCHEDULE
+# 12. GET SCHEDULE TOOL
 # ============================================================
 
 @tool
@@ -676,24 +528,144 @@ def get_schedule(
 ) -> str:
 
     """
-    Retrieve schedule information based
-    on date, event type or user query.
+    Retrieve relevant schedule information
+    using ChromaDB vector retrieval.
     """
 
-    events = retrieve_schedule(
+    schedule = load_schedule()
 
-        query=query,
 
-        date=date,
+    # --------------------------------------------------------
+    # DATE FILTER
+    # --------------------------------------------------------
 
-        event_type=event_type
-    )
+    if date:
 
-    return format_events(events)
+        normalized_date = normalize_date(
+            date
+        )
+
+
+        schedule = [
+
+            event
+
+            for event in schedule
+
+            if event["date"] ==
+            normalized_date
+        ]
+
+
+    # --------------------------------------------------------
+    # EVENT TYPE FILTER
+    # --------------------------------------------------------
+
+    if event_type:
+
+        schedule = [
+
+            event
+
+            for event in schedule
+
+            if event["type"].lower()
+            ==
+            event_type.lower()
+        ]
+
+
+    # --------------------------------------------------------
+    # VECTOR SEARCH
+    # --------------------------------------------------------
+
+    try:
+
+        if collection.count() > 0:
+
+            results = collection.query(
+
+                query_texts=[query],
+
+                n_results=min(
+                    10,
+                    collection.count()
+                )
+            )
+
+
+            retrieved_ids = (
+
+                results["ids"][0]
+
+                if results.get("ids")
+                else []
+            )
+
+
+            event_map = {
+
+                event["id"]:
+                    event
+
+                for event in schedule
+            }
+
+
+            vector_results = [
+
+                event_map[event_id]
+
+                for event_id in retrieved_ids
+
+                if event_id in event_map
+            ]
+
+
+            if vector_results:
+
+                schedule = vector_results
+
+
+    except Exception as error:
+
+        print(
+            "Chroma search error:",
+            error
+        )
+
+
+    if not schedule:
+
+        return (
+            "No matching schedule events found."
+        )
+
+
+    result = []
+
+
+    for event in schedule:
+
+        result.append(
+
+            f"ID: {event['id']}\n"
+            f"Title: {event['title']}\n"
+            f"Type: {event['type']}\n"
+            f"Date: {event['date']}\n"
+            f"Time: {event['start_time']} - "
+            f"{event['end_time']}\n"
+            f"Location: {event['location']}\n"
+            f"Description: "
+            f"{event['description']}"
+        )
+
+
+    return "\n\n".join(result)
 
 
 # ============================================================
-# 17. TOOL 2 - UPDATE SCHEDULE
+# 13. UPDATE SCHEDULE TOOL
 # ============================================================
 
 @tool
@@ -721,11 +693,6 @@ def update_schedule(
 
     """
     Add, update or remove schedule entries.
-
-    operation:
-    add
-    update
-    remove
     """
 
     schedule = load_schedule()
@@ -738,69 +705,71 @@ def update_schedule(
     if operation.lower() == "add":
 
         if not title:
-            return "Title is required."
+
+            return (
+                "Title is required."
+            )
+
 
         if not date:
-            return "Date is required."
+
+            return (
+                "Date is required."
+            )
+
 
         if not start_time:
-            return "Start time is required."
 
-        normalized_date = normalize_date(date)
-
-        normalized_start = normalize_time(
-            start_time
-        )
-
-        if end_time:
-
-            normalized_end = normalize_time(
-                end_time
+            return (
+                "Start time is required."
             )
-
-        else:
-
-            start_dt = datetime.strptime(
-                normalized_start,
-                "%H:%M"
-            )
-
-            normalized_end = (
-
-                start_dt + timedelta(hours=1)
-            ).strftime("%H:%M")
 
 
         new_event = {
 
-            "id": str(uuid.uuid4()),
+            "id":
+                "event-" +
+                str(uuid.uuid4())[:8],
 
-            "title": title,
+            "title":
+                title,
 
-            "type": event_type or "meeting",
+            "type":
+                event_type or "meeting",
 
-            "date": normalized_date,
+            "date":
+                normalize_date(date),
 
-            "start_time": normalized_start,
+            "start_time":
+                start_time,
 
-            "end_time": normalized_end,
+            "end_time":
+                end_time or "Not specified",
 
-            "location": location or "Not specified",
+            "location":
+                location or "Not specified",
 
-            "description": description or ""
+            "description":
+                description or ""
         }
 
-        schedule.append(new_event)
 
-        save_schedule(schedule)
+        schedule.append(
+            new_event
+        )
 
-        rebuild_vector_database()
+
+        save_schedule(
+            schedule
+        )
+
 
         return (
 
             "Event added successfully.\n\n"
 
-            + event_to_text(new_event)
+            +
+            event_to_text(new_event)
         )
 
 
@@ -813,10 +782,12 @@ def update_schedule(
         if not event_id:
 
             return (
-                "event_id is required for update."
+                "event_id is required."
             )
 
+
         target = None
+
 
         for event in schedule:
 
@@ -826,46 +797,62 @@ def update_schedule(
 
                 break
 
+
         if target is None:
 
-            return "Event not found."
+            return (
+                "Event not found."
+            )
 
 
         if title is not None:
+
             target["title"] = title
 
+
         if event_type is not None:
+
             target["type"] = event_type
 
+
         if date is not None:
-            target["date"] = normalize_date(date)
+
+            target["date"] = normalize_date(
+                date
+            )
+
 
         if start_time is not None:
-            target["start_time"] = normalize_time(
-                start_time
-            )
+
+            target["start_time"] = start_time
+
 
         if end_time is not None:
-            target["end_time"] = normalize_time(
-                end_time
-            )
+
+            target["end_time"] = end_time
+
 
         if location is not None:
+
             target["location"] = location
 
+
         if description is not None:
+
             target["description"] = description
 
 
-        save_schedule(schedule)
+        save_schedule(
+            schedule
+        )
 
-        rebuild_vector_database()
 
         return (
 
             "Event updated successfully.\n\n"
 
-            + event_to_text(target)
+            +
+            event_to_text(target)
         )
 
 
@@ -878,10 +865,14 @@ def update_schedule(
         if not event_id:
 
             return (
-                "event_id is required for removal."
+                "event_id is required."
             )
 
-        old_length = len(schedule)
+
+        old_length = len(
+            schedule
+        )
+
 
         schedule = [
 
@@ -892,13 +883,18 @@ def update_schedule(
             if event["id"] != event_id
         ]
 
+
         if len(schedule) == old_length:
 
-            return "Event not found."
+            return (
+                "Event not found."
+            )
 
-        save_schedule(schedule)
 
-        rebuild_vector_database()
+        save_schedule(
+            schedule
+        )
+
 
         return (
             "Event removed successfully."
@@ -906,193 +902,119 @@ def update_schedule(
 
 
     return (
-        "Invalid operation. "
-        "Use add, update or remove."
+        "Invalid operation."
     )
 
 
 # ============================================================
-# 18. TOOLS
+# 14. TOOLS
 # ============================================================
 
-schedule_tools = [
+tools = [
+
     get_schedule,
+
     update_schedule
 ]
 
+
 tool_map = {
 
-    "get_schedule": get_schedule,
+    "get_schedule":
+        get_schedule,
 
-    "update_schedule": update_schedule
+    "update_schedule":
+        update_schedule
 }
 
 
 # ============================================================
-# 19. INPUT NODE
+# 15. AGENT NODE
 # ============================================================
 
-def schedule_input_node(
-    state: ScheduleState
-):
+def agent_node(state):
 
-    user_query = (
-        state["messages"][-1].content
-    )
-
-    return {
-
-        "user_query": user_query,
-
-        "next_step": "agent"
-    }
+    query = state["user_query"]
 
 
-# ============================================================
-# 20. AGENT NODE
-# ============================================================
-
-def agent_node(
-    state: ScheduleState
-):
-
-    print("\n" + "=" * 50)
-    print("                    AGENT")
-    print("=" * 50)
-
-
-    # --------------------------------------------------------
-    # First agent call
-    # --------------------------------------------------------
-
-    if state.get("last_tool") is None:
-
-        system_prompt = """
+    system_prompt = """
 
 You are an Agentic RAG Schedule Assistant.
 
-You manage the user's schedule.
+You manage a user's schedule.
 
 You have exactly two tools:
 
 1. get_schedule
 2. update_schedule
 
-Use get_schedule when the user asks
-about existing schedule information.
+Rules:
 
-Use update_schedule when the user wants
-to add, update, move or remove an event.
+- For questions about existing events,
+  use get_schedule.
 
-IMPORTANT:
+- For adding an event,
+  use update_schedule.
 
-For a request such as:
+- For removing an event,
+  first use get_schedule if you need
+  to identify the event.
 
-"Move my Project Meeting from 2 PM to 4 PM."
+- For moving or updating an event,
+  first use get_schedule to identify
+  the event and its event_id.
 
-FIRST use get_schedule to find the
-existing event.
+- Never invent an event_id.
 
-Then use update_schedule.
+- If schedule information is needed,
+  use the appropriate tool.
 
-Never invent an event ID.
+After the tool result is provided,
+the application will generate the final
+answer.
 
-For availability questions,
-retrieve the relevant schedule.
-
-Interpret:
-today
-tomorrow
-Monday
-Tuesday
-etc.
-relative to the current date.
-
-After retrieving information,
-do not repeatedly call get_schedule.
+Be concise.
 """
-
-    else:
-
-        # ----------------------------------------------------
-        # Second agent call after retrieval
-        # ----------------------------------------------------
-
-        system_prompt = """
-
-You are completing a schedule update.
-
-The previous tool call retrieved
-the user's schedule.
-
-Read the retrieved ToolMessage.
-
-If the user requested a modification
-and the correct event is present,
-call update_schedule.
-
-If the user's request does not require
-an update, do not call another tool.
-
-Do not call get_schedule again.
-
-Never invent an event ID.
-"""
-
-
-    messages = [
-
-        HumanMessage(
-            content=system_prompt
-        )
-    ]
-
-    messages.extend(
-        state["messages"]
-    )
 
 
     response = (
 
         llm
 
-        .bind_tools(
-            schedule_tools
-        )
+        .bind_tools(tools)
 
-        .invoke(messages)
-    )
+        .invoke([
 
+            HumanMessage(
+                content=
+                system_prompt
+                +
+                "\n\nUSER REQUEST:\n"
+                +
+                query
+            )
 
-    print(
-        "[Agent] Response generated."
+        ])
     )
 
 
     return {
 
-        "messages": [response],
-
-        "next_step": "tools"
+        "messages":
+            [response]
     }
 
 
 # ============================================================
-# 21. TOOL NODE
+# 16. TOOL EXECUTION NODE
 # ============================================================
 
-def tool_node(
-    state: ScheduleState
-):
-
-    print("\n" + "=" * 50)
-    print("                TOOL")
-    print("=" * 50)
-
+def tool_node(state):
 
     last_message = (
         state["messages"][-1]
     )
+
 
     tool_calls = getattr(
         last_message,
@@ -1104,117 +1026,81 @@ def tool_node(
     if not tool_calls:
 
         return {
-            "next_step": "final"
+
+            "tool_result":
+                "No tool was required."
         }
 
 
-    new_messages = []
-
-    last_tool = None
-
-    retrieved_schedule = None
-
-    operation_result = None
+    outputs = []
 
 
     for tool_call in tool_calls:
 
-        tool_name = tool_call["name"]
-
-        tool_args = tool_call["args"]
-
-        last_tool = tool_name
-
-        print(
-            "[Tool] Calling:",
-            tool_name
+        tool_name = (
+            tool_call["name"]
         )
 
 
-        selected_tool = tool_map.get(
-            tool_name
+        tool_args = (
+            tool_call["args"]
+        )
+
+
+        selected_tool = (
+            tool_map.get(
+                tool_name
+            )
         )
 
 
         if selected_tool is None:
 
             result = (
-                "Unknown tool: "
-                + tool_name
+                "Unknown tool."
             )
 
         else:
 
             try:
 
-                result = selected_tool.invoke(
-                    tool_args
+                result = (
+                    selected_tool.invoke(
+                        tool_args
+                    )
                 )
 
             except Exception as error:
 
                 result = (
-                    "Tool execution error: "
-                    + str(error)
+                    "Tool error: "
+                    +
+                    str(error)
                 )
 
 
-        print(
-            "[Tool] Result:",
-            result
+        outputs.append(
+            str(result)
         )
-
-
-        new_messages.append(
-
-            ToolMessage(
-
-                content=str(result),
-
-                tool_call_id=
-                    tool_call["id"]
-            )
-        )
-
-
-        if tool_name == "get_schedule":
-
-            retrieved_schedule = str(result)
-
-        elif tool_name == "update_schedule":
-
-            operation_result = str(result)
 
 
     return {
 
-        "messages": new_messages,
-
-        "retrieved_schedule":
-            retrieved_schedule,
-
-        "operation_result":
-            operation_result,
-
-        "last_tool":
-            last_tool,
-
-        "next_step":
-            "continue"
+        "tool_result":
+            "\n\n".join(outputs)
     }
 
 
 # ============================================================
-# 22. ROUTING AFTER AGENT
+# 17. ROUTER
 # ============================================================
 
-def route_after_agent(
-    state: ScheduleState
-):
+def route_agent(state):
 
     last_message = (
         state["messages"][-1]
     )
+
 
     tool_calls = getattr(
         last_message,
@@ -1232,185 +1118,72 @@ def route_after_agent(
 
 
 # ============================================================
-# 23. ROUTING AFTER TOOL
+# 18. FINAL ANSWER NODE
 # ============================================================
 
-def route_after_tools(
-    state: ScheduleState
-):
-
-    last_tool = state.get(
-        "last_tool"
-    )
-
-
-    # --------------------------------------------------------
-    # update_schedule is always the final tool
-    # --------------------------------------------------------
-
-    if last_tool == "update_schedule":
-
-        return "final"
-
-
-    # --------------------------------------------------------
-    # If get_schedule was used, determine whether
-    # the user wanted a modification.
-    # --------------------------------------------------------
+def final_node(state):
 
     query = (
-        state.get("user_query")
-        or ""
-    ).lower()
-
-
-    modification_words = [
-
-        "add",
-
-        "update",
-
-        "move",
-
-        "change",
-
-        "remove",
-
-        "delete",
-
-        "reschedule"
-    ]
-
-
-    is_modification = any(
-
-        word in query
-
-        for word in modification_words
+        state["user_query"]
     )
 
 
-    if is_modification:
-
-        return "agent"
-
-
-    # --------------------------------------------------------
-    # Normal information request:
-    # retrieve → final
-    # --------------------------------------------------------
-
-    return "final"
+    tool_result = (
+        state.get(
+            "tool_result"
+        )
+        or
+        "No schedule information was retrieved."
+    )
 
 
-# ============================================================
-# 24. FINAL RESPONSE
-# ============================================================
+    final_prompt = f"""
 
-def final_response_node(
-    state: ScheduleState
-):
+You are a helpful schedule assistant.
 
-    print("\n" + "=" * 50)
-    print("             FINAL RESPONSE")
-    print("=" * 50)
+USER REQUEST:
+
+{query}
 
 
-    final_prompt = """
+SCHEDULE INFORMATION:
 
-You are the final response generator
-for a schedule assistant.
+{tool_result}
 
-Answer the user's original request.
 
-Use the ToolMessage information
-provided in the conversation.
+Give the final answer to the user.
 
-Do not invent schedule information.
+Important:
 
-For schedule questions, clearly list
-the relevant events.
+- Answer directly.
+- Do not mention tools.
+- Do not mention LangGraph.
+- Do not mention ChromaDB.
+- Do not mention RAG.
+- Do not mention internal processing.
+- If an event was added, updated or removed,
+  clearly confirm it.
+- If no matching event exists,
+  clearly say so.
 
-For availability questions, say whether
-the requested period is free or occupied.
-
-For added, updated, moved or removed
-events, clearly confirm the operation.
-
-If no matching event exists,
-say so clearly.
-
-Keep the answer concise.
-
-Do not mention internal tools,
-LangGraph, ChromaDB or RAG unless
-the user specifically asks about them.
+Return only the final answer.
 """
 
 
-    messages = [
-
-        HumanMessage(
-            content=final_prompt
-        )
-    ]
-
-
-    messages.extend(
-        state["messages"]
-    )
-
-
     response = llm.invoke(
-        messages
-    )
-
-
-    content = response.content
-
-
-    if isinstance(content, list):
-
-        parts = []
-
-        for item in content:
-
-            if isinstance(item, dict):
-
-                parts.append(
-                    item.get("text", "")
-                )
-
-            else:
-
-                parts.append(
-                    str(item)
-                )
-
-        answer = "\n".join(parts)
-
-    else:
-
-        answer = str(content)
-
-
-    print(
-        "[Final] Response generated."
+        final_prompt
     )
 
 
     return {
 
         "final_answer":
-            answer,
-
-        "next_step":
-            "completed"
+            str(response.content)
     }
 
 
 # ============================================================
-# 25. LANGGRAPH
+# 19. BUILD LANGGRAPH
 # ============================================================
 
 workflow = StateGraph(
@@ -1419,33 +1192,25 @@ workflow = StateGraph(
 
 
 workflow.add_node(
-    "schedule_input",
-    schedule_input_node
-)
-
-workflow.add_node(
     "agent",
     agent_node
 )
+
 
 workflow.add_node(
     "tools",
     tool_node
 )
 
+
 workflow.add_node(
     "final",
-    final_response_node
+    final_node
 )
 
 
 workflow.add_edge(
     START,
-    "schedule_input"
-)
-
-workflow.add_edge(
-    "schedule_input",
     "agent"
 )
 
@@ -1454,7 +1219,7 @@ workflow.add_conditional_edges(
 
     "agent",
 
-    route_after_agent,
+    route_agent,
 
     {
 
@@ -1467,20 +1232,9 @@ workflow.add_conditional_edges(
 )
 
 
-workflow.add_conditional_edges(
-
+workflow.add_edge(
     "tools",
-
-    route_after_tools,
-
-    {
-
-        "agent":
-            "agent",
-
-        "final":
-            "final"
-    }
+    "final"
 )
 
 
@@ -1490,17 +1244,88 @@ workflow.add_edge(
 )
 
 
-rt_app = workflow.compile()
+graph = workflow.compile()
 
 
-print(
-    "LangGraph Schedule Agent "
-    "compiled successfully."
+# ============================================================
+# 20. FUNCTION USED BY LANGSERVE PLAYGROUND
+# ============================================================
+
+def run_graph_for_playground(
+    task: str
+) -> str:
+
+    """
+
+    This function receives the text entered
+    in the LangServe Playground.
+
+    It runs the LangGraph and RETURNS A STRING.
+
+    Returning a completed string is important
+    because the LangServe Playground displays
+    this returned value.
+    """
+
+    initial_state = {
+
+        "messages": [
+
+            HumanMessage(
+                content=task
+            )
+
+        ],
+
+        "user_query":
+            task,
+
+        "tool_result":
+            None,
+
+        "final_answer":
+            None
+    }
+
+
+    result = graph.invoke(
+
+        initial_state,
+
+        config={
+
+            "recursion_limit":
+                5
+        }
+    )
+
+
+    answer = result.get(
+        "final_answer"
+    )
+
+
+    if answer is None:
+
+        return (
+            "No answer was generated."
+        )
+
+
+    return str(answer)
+
+
+# ============================================================
+# 21. CREATE RUNNABLE
+# ============================================================
+
+agent_runnable = RunnableLambda(
+    run_graph_for_playground
 )
 
 
 # ============================================================
-# 26. FASTAPI
+# 22. FASTAPI
 # ============================================================
 
 app = FastAPI(
@@ -1508,72 +1333,14 @@ app = FastAPI(
     title=
         "Agentic RAG Schedule Assistant",
 
-    description=
-        "30-Day Schedule Assistant "
-        "using Gemini, LangGraph "
-        "and ChromaDB.",
-
-    version="1.0.0"
+    version=
+        "1.0"
 )
 
 
 # ============================================================
-# 27. PLAYGROUND FUNCTION
+# 23. LANGSERVE PLAYGROUND
 # ============================================================
-
-def run_graph_for_playground(
-    task: str
-) -> str:
-
-    initial_state: ScheduleState = {
-
-        "messages": [
-
-            HumanMessage(
-                content=task
-            )
-        ],
-
-        "next_step": None,
-
-        "user_query": task,
-
-        "retrieved_schedule": None,
-
-        "operation_result": None,
-
-        "final_answer": None,
-
-        "last_tool": None
-    }
-
-
-    result = rt_app.invoke(
-
-        initial_state,
-
-        config={
-            "recursion_limit": 10
-        }
-    )
-
-
-    return result.get(
-
-        "final_answer",
-
-        "No response generated."
-    )
-
-
-# ============================================================
-# 28. LANGSERVE
-# ============================================================
-
-agent_runnable = RunnableLambda(
-    run_graph_for_playground
-)
-
 
 add_routes(
 
@@ -1588,18 +1355,7 @@ add_routes(
 
 
 # ============================================================
-# 29. REQUEST MODEL
-# ============================================================
-
-class ScheduleRequest(
-    BaseModel
-):
-
-    task: str
-
-
-# ============================================================
-# 30. ROOT
+# 24. ROOT
 # ============================================================
 
 @app.get("/")
@@ -1607,41 +1363,40 @@ def root():
 
     return {
 
-        "status": "running",
+        "status":
+            "running",
 
         "message":
-            "Agentic RAG Schedule "
-            "Assistant is running.",
+            "Agentic RAG Schedule Assistant",
 
         "playground":
             "/agent/playground/",
 
         "docs":
-            "/docs",
-
-        "schedule":
-            "/schedule"
+            "/docs"
     }
 
 
 # ============================================================
-# 31. HEALTH
+# 25. HEALTH
 # ============================================================
 
 @app.get("/health")
 def health():
 
     return {
-        "status": "healthy"
+
+        "status":
+            "healthy"
     }
 
 
 # ============================================================
-# 32. VIEW SCHEDULE
+# 26. SCHEDULE VIEW
 # ============================================================
 
 @app.get("/schedule")
-def view_schedule():
+def schedule():
 
     return {
 
@@ -1651,56 +1406,13 @@ def view_schedule():
 
 
 # ============================================================
-# 33. TEST AGENT
-# ============================================================
-
-@app.get("/test-agent")
-def test_agent():
-
-    result = run_graph_for_playground(
-
-        "What workshops do I have?"
-    )
-
-
-    return {
-
-        "result":
-            result
-    }
-
-
-# ============================================================
-# 34. CUSTOM API
-# ============================================================
-
-@app.post("/run")
-def run_agent(
-    request: ScheduleRequest
-):
-
-    result = run_graph_for_playground(
-        request.task
-    )
-
-
-    return {
-
-        "task":
-            request.task,
-
-        "answer":
-            result
-    }
-
-
-# ============================================================
-# 35. START SERVER
+# 27. START SERVER
 # ============================================================
 
 if __name__ == "__main__":
 
     import uvicorn
+
 
     port = int(
 
@@ -1709,6 +1421,7 @@ if __name__ == "__main__":
             8000
         )
     )
+
 
     uvicorn.run(
 
