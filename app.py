@@ -2,18 +2,15 @@ import os
 import json
 import uuid
 import shutil
+import asyncio
 from datetime import datetime, timedelta
-from typing import TypedDict, List, Optional
+from typing import Optional
 
 import chromadb
-from chromadb.utils import embedding_functions
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.graph import StateGraph, START, END
+import google.generativeai as genai
 
 
 # ============================================================
@@ -22,53 +19,43 @@ from langgraph.graph import StateGraph, START, END
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 if not GOOGLE_API_KEY:
-    raise RuntimeError(
-        "GOOGLE_API_KEY is not set. "
-        "Add it in Render -> Environment Variables."
-    )
+    raise RuntimeError("GOOGLE_API_KEY environment variable is not set.")
 
-# gemini-2.0-flash is available on all free Gemini API tiers.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
-# On Render the repo root is read-only after build.
-# /tmp is always writable and survives for the life of the process.
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+genai.configure(api_key=GOOGLE_API_KEY)
+
+BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 SCHEDULE_FILE = "/tmp/schedule.json"
+SEED_FILE     = os.path.join(BASE_DIR, "schedule.json")
 
-# Pre-populate /tmp/schedule.json from the bundled seed file (first boot).
-SEED_FILE = os.path.join(BASE_DIR, "schedule.json")
+# Copy seed data to writable /tmp on first boot
 if not os.path.exists(SCHEDULE_FILE) and os.path.exists(SEED_FILE):
     shutil.copy(SEED_FILE, SCHEDULE_FILE)
 
-llm = ChatGoogleGenerativeAI(
-    model=GEMINI_MODEL,
-    google_api_key=GOOGLE_API_KEY,
-    temperature=0,
-)
-
 
 # ============================================================
-# 2. SCHEDULE DATA (seed / load / save)
+# 2. SCHEDULE DATA
 # ============================================================
 
 def create_sample_schedule() -> list:
     today = datetime.now().date()
     raw = [
-        ("Team Standup",         "meeting",     0,  "10:00", "10:30", "Online",         "Daily project status meeting."),
-        ("DSA Practice",         "task",         1,  "09:00", "10:00", "Hostel",          "Practice arrays and sliding window problems."),
-        ("AI Workshop",          "workshop",     2,  "14:00", "17:00", "College Lab",     "Hands-on workshop about Agentic AI and RAG."),
-        ("Project Meeting",      "meeting",      3,  "14:00", "15:00", "Online",          "Discuss major project progress."),
-        ("Doctor Appointment",   "appointment",  5,  "11:00", "12:00", "City Clinic",     "Regular health check-up."),
-        ("Java Practice",        "task",         7,  "18:00", "19:30", "Hostel",          "Practice Java collections and DSA."),
-        ("Cloud Workshop",       "workshop",     10, "10:00", "13:00", "College",         "Introduction to cloud deployment."),
-        ("Project Review",       "meeting",      14, "15:00", "16:00", "Online",          "Review Agentic RAG implementation."),
-        ("Gym Session",          "task",         16, "07:00", "08:00", "Campus Gym",      "Morning workout."),
-        ("Resume Workshop",      "workshop",     18, "11:00", "13:00", "Seminar Hall",    "Build and refine your resume."),
-        ("Mock Interview",       "appointment",  21, "10:00", "11:30", "Online",          "Practice technical interview questions."),
-        ("Assignment Deadline",  "task",         20, "12:00", "13:00", "College Portal",  "Submit the AI project assignment."),
-        ("Career Workshop",      "workshop",     25, "16:00", "18:00", "Seminar Hall",    "Resume and interview preparation."),
-        ("Final Exam Prep",      "task",         28, "09:00", "12:00", "Library",         "Study for end-semester exams."),
-        ("Team Lunch",           "meeting",      29, "13:00", "14:00", "Cafeteria",       "Team bonding lunch."),
+        ("Team Standup",        "meeting",     0,  "10:00", "10:30", "Online",        "Daily project status meeting."),
+        ("DSA Practice",        "task",        1,  "09:00", "10:00", "Hostel",         "Practice arrays and sliding window problems."),
+        ("AI Workshop",         "workshop",    2,  "14:00", "17:00", "College Lab",    "Hands-on workshop about Agentic AI and RAG."),
+        ("Project Meeting",     "meeting",     3,  "14:00", "15:00", "Online",         "Discuss major project progress."),
+        ("Doctor Appointment",  "appointment", 5,  "11:00", "12:00", "City Clinic",    "Regular health check-up."),
+        ("Java Practice",       "task",        7,  "18:00", "19:30", "Hostel",         "Practice Java collections and DSA."),
+        ("Cloud Workshop",      "workshop",    10, "10:00", "13:00", "College",        "Introduction to cloud deployment."),
+        ("Project Review",      "meeting",     14, "15:00", "16:00", "Online",         "Review Agentic RAG implementation."),
+        ("Gym Session",         "task",        16, "07:00", "08:00", "Campus Gym",     "Morning workout session."),
+        ("Resume Workshop",     "workshop",    18, "11:00", "13:00", "Seminar Hall",   "Build and refine your resume."),
+        ("Mock Interview",      "appointment", 21, "10:00", "11:30", "Online",         "Practice technical interview questions."),
+        ("Assignment Deadline", "task",        20, "12:00", "13:00", "College Portal", "Submit the AI project assignment."),
+        ("Career Workshop",     "workshop",    25, "16:00", "18:00", "Seminar Hall",   "Resume and interview preparation."),
+        ("Final Exam Prep",     "task",        28, "09:00", "12:00", "Library",        "Study for end-semester exams."),
+        ("Team Lunch",          "meeting",     29, "13:00", "14:00", "Cafeteria",      "Team bonding lunch."),
     ]
     events = []
     for title, etype, offset, start, end, location, desc in raw:
@@ -88,443 +75,330 @@ def create_sample_schedule() -> list:
 def load_schedule() -> list:
     if not os.path.exists(SCHEDULE_FILE):
         data = create_sample_schedule()
-        with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+        with open(SCHEDULE_FILE, "w") as f:
             json.dump(data, f, indent=2)
         return data
-    with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+    with open(SCHEDULE_FILE) as f:
         return json.load(f)
 
 
-def save_schedule(schedule: list) -> None:
-    with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+def save_schedule(schedule: list):
+    with open(SCHEDULE_FILE, "w") as f:
         json.dump(schedule, f, indent=2)
 
 
 # ============================================================
-# 3. CHROMADB  (in-memory — works on any platform)
+# 3. CHROMADB (in-memory)
 # ============================================================
 
-# Use the built-in default embedding function (ONNX/MiniLM).
-# No separate model download is needed — chromadb bundles it.
-_ef = embedding_functions.DefaultEmbeddingFunction()
-
-_chroma_client = chromadb.EphemeralClient()
-_collection = _chroma_client.get_or_create_collection(
-    name="schedule",
-    embedding_function=_ef,
-)
+_chroma = chromadb.EphemeralClient()
+_col    = _chroma.get_or_create_collection("schedule")
 
 
-def event_to_text(event: dict) -> str:
-    return (
-        f"Event ID: {event['id']}. "
-        f"Title: {event['title']}. "
-        f"Type: {event['type']}. "
-        f"Date: {event['date']}. "
-        f"Time: {event['start_time']} to {event['end_time']}. "
-        f"Location: {event['location']}. "
-        f"Description: {event['description']}."
-    )
+def event_to_text(e: dict) -> str:
+    return (f"ID:{e['id']} Title:{e['title']} Type:{e['type']} "
+            f"Date:{e['date']} Time:{e['start_time']}-{e['end_time']} "
+            f"Location:{e['location']} Desc:{e['description']}")
 
 
-def rebuild_vector_db() -> None:
-    global _collection
+def rebuild_chroma():
+    global _col
     try:
-        _chroma_client.delete_collection("schedule")
+        _chroma.delete_collection("schedule")
     except Exception:
         pass
-    _collection = _chroma_client.get_or_create_collection(
-        name="schedule",
-        embedding_function=_ef,
-    )
-    schedule = load_schedule()
-    if not schedule:
-        return
-    _collection.add(
-        ids=[e["id"] for e in schedule],
-        documents=[event_to_text(e) for e in schedule],
-        metadatas=[
-            {
-                "date":       e["date"],
-                "type":       e["type"],
-                "start_time": e["start_time"],
-                "end_time":   e["end_time"],
-            }
-            for e in schedule
-        ],
-    )
+    _col = _chroma.get_or_create_collection("schedule")
+    data = load_schedule()
+    if data:
+        _col.add(
+            ids=[e["id"] for e in data],
+            documents=[event_to_text(e) for e in data],
+            metadatas=[{"date": e["date"], "type": e["type"]} for e in data],
+        )
 
 
-# Build on startup
-rebuild_vector_db()
+rebuild_chroma()
 
 
 # ============================================================
-# 4. DATE / TIME HELPERS
+# 4. HELPERS
 # ============================================================
 
-def normalize_date(value: Optional[str]) -> Optional[str]:
-    if not value:
+def normalize_date(v: Optional[str]) -> Optional[str]:
+    if not v:
         return None
-    text = value.strip().lower()
+    t = v.strip().lower()
     today = datetime.now().date()
-
-    if text == "today":
+    if t == "today":
         return today.isoformat()
-    if text == "tomorrow":
+    if t == "tomorrow":
         return (today + timedelta(days=1)).isoformat()
-
-    weekdays = {
-        "monday": 0, "tuesday": 1, "wednesday": 2,
-        "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6,
-    }
-    if text in weekdays:
-        target = weekdays[text]
-        days_ahead = (target - today.weekday()) % 7
-        if days_ahead == 0:
-            days_ahead = 7  # "next" occurrence
-        return (today + timedelta(days=days_ahead)).isoformat()
-
-    for fmt in ("%Y-%m-%d", "%B %d", "%b %d", "%B %d, %Y", "%b %d, %Y"):
+    days = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,
+            "friday":4,"saturday":5,"sunday":6}
+    if t in days:
+        ahead = (days[t] - today.weekday()) % 7 or 7
+        return (today + timedelta(days=ahead)).isoformat()
+    for fmt in ("%Y-%m-%d", "%B %d", "%b %d", "%B %d, %Y"):
         try:
-            parsed = datetime.strptime(text, fmt)
+            p = datetime.strptime(t, fmt)
             if fmt in ("%B %d", "%b %d"):
-                parsed = parsed.replace(year=today.year)
-            return parsed.date().isoformat()
+                p = p.replace(year=today.year)
+            return p.date().isoformat()
         except ValueError:
             pass
+    return v
 
-    return text  # pass through and let the LLM handle it
 
-
-def normalize_time(value: Optional[str]) -> Optional[str]:
-    if not value:
+def normalize_time(v: Optional[str]) -> Optional[str]:
+    if not v:
         return None
-    text = value.strip().upper().replace(".", "")
-    for fmt in ("%I %p", "%I:%M %p", "%H:%M", "%I%p"):
+    t = v.strip().upper().replace(".", "")
+    for fmt in ("%I:%M %p", "%I %p", "%I%p", "%H:%M"):
         try:
-            return datetime.strptime(text, fmt).strftime("%H:%M")
+            return datetime.strptime(t, fmt).strftime("%H:%M")
         except ValueError:
             pass
-    return text
+    return v
 
 
-def time_overlaps(
-    ev_start: str,
-    ev_end: str,
-    req_start: Optional[str],
-    req_end: Optional[str],
-) -> bool:
-    if not req_start and not req_end:
-        return True
-    rs = req_start or "00:00"
-    re = req_end or "23:59"
-    return ev_start < re and ev_end > rs
-
-
-# ============================================================
-# 5. RAG RETRIEVAL
-# ============================================================
-
-def search_schedule(
-    query: str,
-    date: Optional[str] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    event_type: Optional[str] = None,
-) -> list:
-    schedule = load_schedule()
-    norm_date  = normalize_date(date)
-    norm_start = normalize_time(start_time)
-    norm_end   = normalize_time(end_time)
-
-    # Structured filter first
-    filtered = schedule
-    if norm_date:
-        filtered = [e for e in filtered if e["date"] == norm_date]
-    if event_type:
-        filtered = [e for e in filtered if e["type"].lower() == event_type.lower()]
-    if norm_start or norm_end:
-        filtered = [
-            e for e in filtered
-            if time_overlaps(e["start_time"], e["end_time"], norm_start, norm_end)
-        ]
-
-    # Semantic re-rank via ChromaDB (intersect with filtered)
-    try:
-        count = _collection.count()
-        if count > 0:
-            result = _collection.query(
-                query_texts=[query or "schedule"],
-                n_results=min(10, count),
-            )
-            semantic_ids = result.get("ids", [[]])[0]
-            by_id = {e["id"]: e for e in filtered}
-            reranked = [by_id[i] for i in semantic_ids if i in by_id]
-            if reranked:
-                return reranked
-    except Exception:
-        pass
-
-    return filtered
-
-
-def format_events(events: list) -> str:
+def fmt_events(events: list) -> str:
     if not events:
-        return "No matching schedule events found."
-    parts = []
+        return "No matching events found."
+    out = []
     for e in events:
-        parts.append(
-            f"• [{e['id']}] {e['title']} ({e['type']})\n"
-            f"  Date: {e['date']}  |  Time: {e['start_time']} - {e['end_time']}\n"
+        out.append(
+            f"• ID: {e['id']}\n"
+            f"  {e['title']} ({e['type']})\n"
+            f"  Date: {e['date']}  Time: {e['start_time']}–{e['end_time']}\n"
             f"  Location: {e['location']}\n"
             f"  {e['description']}"
         )
-    return "\n\n".join(parts)
+    return "\n\n".join(out)
 
 
 # ============================================================
-# 6. AGENT TOOLS
+# 5. TOOL IMPLEMENTATIONS
 # ============================================================
 
-@tool
-def get_schedule(
-    query: str,
-    date: Optional[str] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    event_type: Optional[str] = None,
-) -> str:
-    """Retrieve schedule information.
+def tool_get_schedule(query: str, date: str = None, start_time: str = None,
+                      end_time: str = None, event_type: str = None) -> str:
+    data     = load_schedule()
+    nd       = normalize_date(date)
+    ns       = normalize_time(start_time)
+    ne       = normalize_time(end_time)
 
-    Use for:
-    - Listing events on a specific date or weekday
-    - Checking availability / free slots
-    - Looking up an event before updating it
-    - Any read-only query about the schedule
+    filtered = data
+    if nd:
+        filtered = [e for e in filtered if e["date"] == nd]
+    if event_type:
+        filtered = [e for e in filtered if e["type"].lower() == event_type.lower()]
+    if ns or ne:
+        rs = ns or "00:00"
+        re = ne or "23:59"
+        filtered = [e for e in filtered if e["start_time"] < re and e["end_time"] > rs]
 
-    Args:
-        query:      Natural language description of what to find.
-        date:       Date string — e.g. "today", "tomorrow", "friday",
-                    "2026-08-15", "August 15".
-        start_time: Filter to events starting at or after this time.
-        end_time:   Filter to events ending at or before this time.
-        event_type: One of meeting, task, workshop, appointment.
-    """
-    events = search_schedule(
-        query=query,
-        date=date,
-        start_time=start_time,
-        end_time=end_time,
-        event_type=event_type,
-    )
+    # semantic re-rank
+    try:
+        if _col.count() > 0:
+            res = _col.query(query_texts=[query or "schedule"],
+                             n_results=min(10, _col.count()))
+            sem_ids = res["ids"][0]
+            by_id   = {e["id"]: e for e in filtered}
+            ranked  = [by_id[i] for i in sem_ids if i in by_id]
+            if ranked:
+                return fmt_events(ranked)
+    except Exception:
+        pass
 
-    if not events and ("free" in query.lower() or "available" in query.lower()):
-        return "No events overlap that time window. The user appears to be free."
-
-    return format_events(events)
+    if not filtered and ("free" in query.lower() or "available" in query.lower()):
+        return "You appear to be free during that time — no events found."
+    return fmt_events(filtered)
 
 
-@tool
-def update_schedule(
-    operation: str,
-    event_id: Optional[str] = None,
-    title: Optional[str] = None,
-    event_type: Optional[str] = None,
-    date: Optional[str] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    location: Optional[str] = None,
-    description: Optional[str] = None,
-) -> str:
-    """Add, update, or remove a schedule entry.
-
-    Args:
-        operation:  "add", "update", or "remove".
-        event_id:   Required for update/remove — the ID from get_schedule.
-        title:      Event title.
-        event_type: meeting | task | workshop | appointment.
-        date:       Date string — "2026-08-15", "August 15", "tomorrow", etc.
-        start_time: e.g. "3 PM", "15:00", "3:30 PM".
-        end_time:   e.g. "4 PM". Defaults to start + 1 hour when omitted.
-        location:   Where the event takes place.
-        description: Free-text notes.
-    """
-    op = operation.lower().strip()
+def tool_update_schedule(operation: str, event_id: str = None, title: str = None,
+                         event_type: str = None, date: str = None,
+                         start_time: str = None, end_time: str = None,
+                         location: str = None, description: str = None) -> str:
+    op       = operation.lower().strip()
     schedule = load_schedule()
 
-    # ── ADD ──────────────────────────────────────────────────
     if op == "add":
         if not title or not date or not start_time:
-            return "To add an event, title, date, and start_time are required."
-
+            return "title, date, and start_time are required to add an event."
         d = normalize_date(date)
         s = normalize_time(start_time)
         e = normalize_time(end_time)
         if not e:
             e = (datetime.strptime(s, "%H:%M") + timedelta(hours=1)).strftime("%H:%M")
-
-        new_event = {
-            "id":          str(uuid.uuid4()),
-            "title":       title,
-            "type":        event_type or "meeting",
-            "date":        d,
-            "start_time":  s,
-            "end_time":    e,
-            "location":    location or "Not specified",
-            "description": description or "",
-        }
-        schedule.append(new_event)
+        ev = {"id": str(uuid.uuid4()), "title": title,
+              "type": event_type or "meeting", "date": d,
+              "start_time": s, "end_time": e,
+              "location": location or "TBD", "description": description or ""}
+        schedule.append(ev)
         save_schedule(schedule)
-        rebuild_vector_db()
-        return "Event added successfully.\n\n" + format_events([new_event])
+        rebuild_chroma()
+        return "Event added:\n\n" + fmt_events([ev])
 
-    # ── UPDATE ───────────────────────────────────────────────
     if op == "update":
         if not event_id:
             return "event_id is required for update."
-        target = next((ev for ev in schedule if ev["id"] == event_id), None)
-        if not target:
-            return f"No event found with id '{event_id}'."
-
-        if title       is not None: target["title"]       = title
-        if event_type  is not None: target["type"]        = event_type
-        if date        is not None: target["date"]        = normalize_date(date)
-        if start_time  is not None: target["start_time"]  = normalize_time(start_time)
-        if end_time    is not None: target["end_time"]    = normalize_time(end_time)
-        if location    is not None: target["location"]    = location
-        if description is not None: target["description"] = description
-
+        ev = next((x for x in schedule if x["id"] == event_id), None)
+        if not ev:
+            return f"No event found with id {event_id}."
+        if title       is not None: ev["title"]       = title
+        if event_type  is not None: ev["type"]        = event_type
+        if date        is not None: ev["date"]        = normalize_date(date)
+        if start_time  is not None: ev["start_time"]  = normalize_time(start_time)
+        if end_time    is not None: ev["end_time"]    = normalize_time(end_time)
+        if location    is not None: ev["location"]    = location
+        if description is not None: ev["description"] = description
         save_schedule(schedule)
-        rebuild_vector_db()
-        return "Event updated successfully.\n\n" + format_events([target])
+        rebuild_chroma()
+        return "Event updated:\n\n" + fmt_events([ev])
 
-    # ── REMOVE ───────────────────────────────────────────────
     if op == "remove":
         if not event_id:
             return "event_id is required for remove."
-        before = len(schedule)
-        schedule = [ev for ev in schedule if ev["id"] != event_id]
-        if len(schedule) == before:
-            return f"No event found with id '{event_id}'."
-        save_schedule(schedule)
-        rebuild_vector_db()
+        new = [x for x in schedule if x["id"] != event_id]
+        if len(new) == len(schedule):
+            return f"No event found with id {event_id}."
+        save_schedule(new)
+        rebuild_chroma()
         return "Event removed successfully."
 
-    return "Invalid operation. Use 'add', 'update', or 'remove'."
-
-
-TOOLS    = [get_schedule, update_schedule]
-TOOL_MAP = {t.name: t for t in TOOLS}
+    return "Invalid operation. Use add, update, or remove."
 
 
 # ============================================================
-# 7. LANGGRAPH AGENT
+# 6. GEMINI FUNCTION CALLING AGENT (no LangGraph)
 # ============================================================
 
-SYSTEM_PROMPT = """You are an Agentic RAG Schedule Assistant that manages a user's schedule.
+GET_SCHEDULE_DECL = genai.protos.FunctionDeclaration(
+    name="get_schedule",
+    description="Retrieve schedule events by date, time, type, or semantic query.",
+    parameters=genai.protos.Schema(
+        type=genai.protos.Type.OBJECT,
+        properties={
+            "query":      genai.protos.Schema(type=genai.protos.Type.STRING,
+                          description="Natural language description of what to find."),
+            "date":       genai.protos.Schema(type=genai.protos.Type.STRING,
+                          description="Date: today, tomorrow, friday, 2026-08-15, August 15, etc."),
+            "start_time": genai.protos.Schema(type=genai.protos.Type.STRING,
+                          description="Filter start time e.g. 14:00 or 2 PM"),
+            "end_time":   genai.protos.Schema(type=genai.protos.Type.STRING,
+                          description="Filter end time e.g. 17:00 or 5 PM"),
+            "event_type": genai.protos.Schema(type=genai.protos.Type.STRING,
+                          description="meeting, task, workshop, or appointment"),
+        },
+        required=["query"],
+    ),
+)
 
-Available tools:
-1. get_schedule  – retrieve / search existing events
-2. update_schedule – add, update, or remove events
+UPDATE_SCHEDULE_DECL = genai.protos.FunctionDeclaration(
+    name="update_schedule",
+    description="Add, update, or remove a schedule entry.",
+    parameters=genai.protos.Schema(
+        type=genai.protos.Type.OBJECT,
+        properties={
+            "operation":   genai.protos.Schema(type=genai.protos.Type.STRING,
+                           description="add, update, or remove"),
+            "event_id":    genai.protos.Schema(type=genai.protos.Type.STRING,
+                           description="ID of the event to update/remove (from get_schedule)"),
+            "title":       genai.protos.Schema(type=genai.protos.Type.STRING),
+            "event_type":  genai.protos.Schema(type=genai.protos.Type.STRING,
+                           description="meeting, task, workshop, appointment"),
+            "date":        genai.protos.Schema(type=genai.protos.Type.STRING),
+            "start_time":  genai.protos.Schema(type=genai.protos.Type.STRING),
+            "end_time":    genai.protos.Schema(type=genai.protos.Type.STRING),
+            "location":    genai.protos.Schema(type=genai.protos.Type.STRING),
+            "description": genai.protos.Schema(type=genai.protos.Type.STRING),
+        },
+        required=["operation"],
+    ),
+)
 
-Decision rules:
-- Any question about what is scheduled → call get_schedule.
-- Availability check ("Am I free Friday afternoon?") → call get_schedule
-  with date="friday", start_time="12:00", end_time="17:00".
-- Adding an event → call update_schedule(operation="add", ...).
-- Moving / rescheduling an event → FIRST call get_schedule to get the
-  event_id, THEN call update_schedule(operation="update", event_id=...).
-- Removing an event → FIRST call get_schedule, THEN update_schedule(operation="remove").
-- NEVER invent event IDs. Always obtain them from get_schedule results.
-- After tools return data, give a concise, friendly answer.
-- Today's date is """ + datetime.now().date().isoformat() + "."
+TOOLS_DECL = genai.protos.Tool(
+    function_declarations=[GET_SCHEDULE_DECL, UPDATE_SCHEDULE_DECL]
+)
+
+SYSTEM_INSTRUCTION = (
+    "You are an Agentic RAG Schedule Assistant managing a user's 30-day schedule.\n"
+    "Today is " + datetime.now().date().isoformat() + ".\n\n"
+    "Rules:\n"
+    "- For ANY question about existing events → call get_schedule.\n"
+    "- For availability (free/busy) → call get_schedule with the date and time range.\n"
+    "  Friday afternoon = start_time=12:00, end_time=17:00.\n"
+    "- To ADD an event → call update_schedule(operation=add, ...).\n"
+    "- To MOVE/RESCHEDULE → FIRST call get_schedule to get the event_id, "
+    "THEN call update_schedule(operation=update, event_id=..., new times).\n"
+    "- To REMOVE → FIRST get_schedule, THEN update_schedule(operation=remove).\n"
+    "- NEVER invent event IDs. Always get them from tool results.\n"
+    "- Give concise, friendly answers after the tools respond."
+)
+
+TOOL_FN_MAP = {
+    "get_schedule":    tool_get_schedule,
+    "update_schedule": tool_update_schedule,
+}
 
 
-class ScheduleState(TypedDict):
-    messages: List[BaseMessage]
-
-
-def agent_node(state: ScheduleState):
-    llm_with_tools = llm.bind_tools(TOOLS)
-    response = llm_with_tools.invoke(
-        [HumanMessage(content=SYSTEM_PROMPT)] + state["messages"]
+def run_agent(task: str) -> str:
+    model = genai.GenerativeModel(
+        model_name=GEMINI_MODEL,
+        tools=[TOOLS_DECL],
+        system_instruction=SYSTEM_INSTRUCTION,
     )
-    return {"messages": [response]}
+    chat    = model.start_chat()
+    history = []
 
+    # Send user message
+    response = chat.send_message(task)
 
-def tools_node(state: ScheduleState):
-    last = state["messages"][-1]
-    results = []
-    for call in getattr(last, "tool_calls", []):
-        name = call["name"]
-        args = call.get("args", {})
-        if name not in TOOL_MAP:
-            content = f"Unknown tool: {name}"
+    # Agentic loop — max 6 tool calls to prevent runaway
+    for _ in range(6):
+        part = response.candidates[0].content.parts[0]
+
+        # If it's a function call, execute it and feed result back
+        if part.function_call.name:
+            fn_name = part.function_call.name
+            fn_args = dict(part.function_call.args)
+
+            if fn_name in TOOL_FN_MAP:
+                try:
+                    result = TOOL_FN_MAP[fn_name](**fn_args)
+                except Exception as exc:
+                    result = f"Tool error: {type(exc).__name__}: {exc}"
+            else:
+                result = f"Unknown tool: {fn_name}"
+
+            # Feed the tool result back to the model
+            response = chat.send_message(
+                genai.protos.Content(
+                    role="user",
+                    parts=[genai.protos.Part(
+                        function_response=genai.protos.FunctionResponse(
+                            name=fn_name,
+                            response={"result": result},
+                        )
+                    )]
+                )
+            )
         else:
-            try:
-                content = TOOL_MAP[name].invoke(args)
-            except Exception as exc:
-                content = f"Tool error ({name}): {type(exc).__name__}: {exc}"
-        results.append(
-            ToolMessage(content=str(content), tool_call_id=call["id"])
-        )
-    return {"messages": results}
+            # Final text answer
+            return part.text
 
-
-def route(state: ScheduleState):
-    last = state["messages"][-1]
-    return "tools" if getattr(last, "tool_calls", []) else END
-
-
-workflow = StateGraph(ScheduleState)
-workflow.add_node("agent", agent_node)
-workflow.add_node("tools", tools_node)
-workflow.add_edge(START, "agent")
-workflow.add_conditional_edges("agent", route, {"tools": "tools", END: END})
-workflow.add_edge("tools", "agent")
-graph = workflow.compile()
+    return "Could not generate a response."
 
 
 # ============================================================
-# 8. FASTAPI APPLICATION
+# 7. FASTAPI
 # ============================================================
 
 app = FastAPI(
     title="Agentic RAG Schedule Assistant",
-    description=(
-        "A 30-day schedule assistant powered by Gemini, LangGraph, and ChromaDB. "
-        "POST /run with {\"task\": \"...\"}  or try the interactive UI at /chat."
-    ),
-    version="3.0.0",
+    version="4.0.0",
 )
 
-
-def run_agent(task: str) -> str:
-    """Invoke the LangGraph agent and return the final text response."""
-    try:
-        result = graph.invoke(
-            {"messages": [HumanMessage(content=task)]},
-            config={"recursion_limit": 25},
-        )
-    except Exception as exc:
-        return f"Agent error: {type(exc).__name__}: {exc}"
-
-    for msg in reversed(result.get("messages", [])):
-        if getattr(msg, "type", "") == "ai" and not getattr(msg, "tool_calls", []):
-            content = msg.content
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                return "\n".join(
-                    item["text"] if isinstance(item, dict) and "text" in item
-                    else str(item)
-                    for item in content
-                )
-    return "No response generated."
-
-
-# ── REST endpoints ────────────────────────────────────────────
 
 class RunRequest(BaseModel):
     task: str
@@ -533,106 +407,99 @@ class RunRequest(BaseModel):
 @app.get("/agent/playground", response_class=HTMLResponse)
 @app.get("/agent/playground/", response_class=HTMLResponse)
 @app.get("/", response_class=HTMLResponse)
-def root():
-    html = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8"/>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-      <title>Schedule Assistant</title>
-      <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem; }
-        h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #7dd3fc; }
-        p.sub { color: #94a3b8; margin-bottom: 2rem; font-size: 0.95rem; }
-        .card { background: #1e293b; border-radius: 12px; padding: 1.5rem; width: 100%; max-width: 700px; margin-bottom: 1rem; }
-        textarea { width: 100%; padding: 0.75rem; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 1rem; resize: vertical; min-height: 80px; }
-        button { margin-top: 0.75rem; padding: 0.6rem 1.5rem; background: #3b82f6; color: white; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; }
-        button:hover { background: #2563eb; }
-        #response { white-space: pre-wrap; background: #0f172a; padding: 1rem; border-radius: 8px; min-height: 60px; color: #a3e635; font-size: 0.95rem; margin-top: 1rem; }
-        .examples { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }
-        .chip { background: #334155; padding: 0.4rem 0.9rem; border-radius: 20px; font-size: 0.82rem; cursor: pointer; }
-        .chip:hover { background: #475569; }
-        a.link { color: #7dd3fc; text-decoration: none; }
-        a.link:hover { text-decoration: underline; }
-      </style>
-    </head>
-    <body>
-      <h1>📅 Schedule Assistant</h1>
-      <p class="sub">Agentic RAG · Gemini · LangGraph · ChromaDB</p>
-      <div class="card">
-        <textarea id="inp" placeholder="Ask me anything about your schedule..."></textarea>
-        <div class="examples">
-          <span class="chip" onclick="ask('What do I have scheduled tomorrow?')">Tomorrow?</span>
-          <span class="chip" onclick="ask('Am I free Friday afternoon?')">Free Friday PM?</span>
-          <span class="chip" onclick="ask('Show all my meetings this week')">This week meetings</span>
-          <span class="chip" onclick="ask('Add a dentist appointment on August 20 at 10 AM')">Add event</span>
-          <span class="chip" onclick="ask('Move my Project Meeting to 4 PM')">Reschedule</span>
-          <span class="chip" onclick="ask('List all workshops')">All workshops</span>
-        </div>
-        <button onclick="sendQuery()">Ask</button>
-        <div id="response">Response will appear here…</div>
-      </div>
-      <p style="font-size:0.8rem; color:#475569;">
-        API: <a class="link" href="/docs">/docs</a> &nbsp;|&nbsp;
-        <a class="link" href="/schedule">/schedule</a> &nbsp;|&nbsp;
-        POST <a class="link" href="/docs#/default/run_endpoint_run_post">/run</a>
-      </p>
-      <script>
-        function ask(text) {
-          document.getElementById('inp').value = text;
-          sendQuery();
-        }
-        async function sendQuery() {
-          const task = document.getElementById('inp').value.trim();
-          if (!task) return;
-          const el = document.getElementById('response');
-          el.textContent = 'Thinking… (may take up to 30s on first request)';
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 120000);
-          try {
-            const res = await fetch('/run', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({task}),
-              signal: controller.signal
-            });
-            clearTimeout(timer);
-            if (!res.ok) {
-              el.textContent = 'Server error ' + res.status + ': ' + await res.text();
-              return;
-            }
-            const data = await res.json();
-            el.textContent = data.answer || JSON.stringify(data);
-          } catch (e) {
-            clearTimeout(timer);
-            if (e.name === 'AbortError') {
-              el.textContent = 'Request timed out after 2 minutes. The server may be waking up — please try again.';
-            } else {
-              el.textContent = 'Error: ' + e.message;
-            }
-          }
-        }
-        document.getElementById('inp').addEventListener('keydown', e => {
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
+def ui():
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Schedule Assistant</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;
+         min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}
+    h1{font-size:2rem;margin-bottom:.4rem;color:#7dd3fc}
+    .sub{color:#94a3b8;margin-bottom:1.8rem;font-size:.95rem}
+    .card{background:#1e293b;border-radius:12px;padding:1.5rem;width:100%;max-width:700px;margin-bottom:1rem}
+    textarea{width:100%;padding:.75rem;border-radius:8px;border:1px solid #334155;
+             background:#0f172a;color:#e2e8f0;font-size:1rem;resize:vertical;min-height:80px}
+    button{margin-top:.75rem;padding:.6rem 1.5rem;background:#3b82f6;color:#fff;
+           border:none;border-radius:8px;font-size:1rem;cursor:pointer}
+    button:hover{background:#2563eb}
+    button:disabled{background:#475569;cursor:not-allowed}
+    #resp{white-space:pre-wrap;background:#0f172a;padding:1rem;border-radius:8px;
+          min-height:60px;color:#a3e635;font-size:.95rem;margin-top:1rem;line-height:1.6}
+    .chips{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1rem}
+    .chip{background:#334155;padding:.4rem .9rem;border-radius:20px;font-size:.82rem;cursor:pointer}
+    .chip:hover{background:#475569}
+    a{color:#7dd3fc;text-decoration:none}a:hover{text-decoration:underline}
+    .note{font-size:.78rem;color:#64748b;margin-top:.5rem}
+  </style>
+</head>
+<body>
+  <h1>📅 Schedule Assistant</h1>
+  <p class="sub">Agentic RAG · Gemini · ChromaDB</p>
+  <div class="card">
+    <textarea id="inp" placeholder="Ask anything about your schedule…"></textarea>
+    <div class="chips">
+      <span class="chip" onclick="ask('What do I have scheduled tomorrow?')">Tomorrow?</span>
+      <span class="chip" onclick="ask('Am I free Friday afternoon?')">Free Friday PM?</span>
+      <span class="chip" onclick="ask('Show all my meetings this week')">This week meetings</span>
+      <span class="chip" onclick="ask('Add a dentist appointment on August 20 at 10 AM')">Add event</span>
+      <span class="chip" onclick="ask('Move my Project Meeting to 4 PM')">Reschedule</span>
+      <span class="chip" onclick="ask('List all workshops')">All workshops</span>
+    </div>
+    <button id="btn" onclick="sendQuery()">Ask</button>
+    <p class="note">First request may take ~30s if the server was idle.</p>
+    <div id="resp">Response will appear here…</div>
+  </div>
+  <p style="font-size:.8rem;color:#475569">
+    <a href="/docs">/docs</a> &nbsp;|&nbsp;
+    <a href="/schedule">/schedule</a> &nbsp;|&nbsp;
+    <a href="/health">/health</a>
+  </p>
+  <script>
+    function ask(t){document.getElementById('inp').value=t;sendQuery()}
+    async function sendQuery(){
+      const task=document.getElementById('inp').value.trim();
+      if(!task)return;
+      const el=document.getElementById('resp');
+      const btn=document.getElementById('btn');
+      el.textContent='Thinking…';
+      btn.disabled=true;
+      const ctrl=new AbortController();
+      const timer=setTimeout(()=>ctrl.abort(),180000);
+      try{
+        const r=await fetch('/run',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({task}),
+          signal:ctrl.signal
         });
-      </script>
-    </body>
-    </html>
-    """
+        clearTimeout(timer);
+        if(!r.ok){el.textContent='Server error '+r.status+': '+await r.text();return}
+        const d=await r.json();
+        el.textContent=d.answer||JSON.stringify(d,null,2);
+      }catch(e){
+        clearTimeout(timer);
+        el.textContent=e.name==='AbortError'
+          ?'Timed out. Server may be waking up — please try again in a moment.'
+          :'Error: '+e.message;
+      }finally{btn.disabled=false}
+    }
+    document.getElementById('inp').addEventListener('keydown',e=>{
+      if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendQuery()}
+    });
+  </script>
+</body>
+</html>"""
     return HTMLResponse(content=html)
 
 
 @app.post("/run")
 async def run_endpoint(request: RunRequest):
-    import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-        answer = await loop.run_in_executor(None, run_agent, request.task)
-    except Exception as exc:
-        import traceback
-        answer = f"Agent error: {type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
+    loop   = asyncio.get_event_loop()
+    answer = await loop.run_in_executor(None, run_agent, request.task)
     return {"task": request.task, "answer": answer}
 
 
@@ -646,11 +513,6 @@ def health():
     return {"status": "ok", "model": GEMINI_MODEL, "events": len(load_schedule())}
 
 
-# ============================================================
-# 9. ENTRY POINT
-# ============================================================
-
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port)
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
