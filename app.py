@@ -502,10 +502,14 @@ app = FastAPI(
 
 def run_agent(task: str) -> str:
     """Invoke the LangGraph agent and return the final text response."""
-    result = graph.invoke(
-        {"messages": [HumanMessage(content=task)]},
-        config={"recursion_limit": 25},
-    )
+    try:
+        result = graph.invoke(
+            {"messages": [HumanMessage(content=task)]},
+            config={"recursion_limit": 25},
+        )
+    except Exception as exc:
+        return f"Agent error: {type(exc).__name__}: {exc}"
+
     for msg in reversed(result.get("messages", [])):
         if getattr(msg, "type", "") == "ai" and not getattr(msg, "tool_calls", []):
             content = msg.content
@@ -526,6 +530,8 @@ class RunRequest(BaseModel):
     task: str
 
 
+@app.get("/agent/playground", response_class=HTMLResponse)
+@app.get("/agent/playground/", response_class=HTMLResponse)
 @app.get("/", response_class=HTMLResponse)
 def root():
     html = """
@@ -607,7 +613,11 @@ def root():
 
 @app.post("/run")
 def run_endpoint(request: RunRequest):
-    answer = run_agent(request.task)
+    try:
+        answer = run_agent(request.task)
+    except Exception as exc:
+        import traceback
+        answer = f"Agent error: {type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
     return {"task": request.task, "answer": answer}
 
 
