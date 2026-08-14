@@ -1,0 +1,19 @@
+Deployed URL: https://schedule-assistant.onrender.com
+
+Steps to get the actual URL:
+1. Push this repo to GitHub (public or private).
+2. Go to https://dashboard.render.com → New → Web Service.
+3. Connect your GitHub repo.
+4. Render auto-detects render.yaml. Confirm the settings.
+5. Under "Environment Variables", add:
+     GOOGLE_API_KEY = <your Gemini API key>
+6. Click "Create Web Service" and wait for the build to finish (~3 min).
+7. Render assigns a URL like:  https://<your-service-name>.onrender.com
+8. Replace the URL above with the real URL and commit this file.
+
+Quick test endpoints once deployed:
+  GET  https://<your-url>/           → Interactive chat UI
+  GET  https://<your-url>/health     → Health check
+  GET  https://<your-url>/schedule   → View all events (JSON)
+  POST https://<your-url>/run        → {"task": "What do I have tomorrow?"}
+  GET  https://<your-url>/docs       → Swagger UI
