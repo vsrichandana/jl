@@ -588,17 +588,30 @@ def root():
           const task = document.getElementById('inp').value.trim();
           if (!task) return;
           const el = document.getElementById('response');
-          el.textContent = 'Thinking…';
+          el.textContent = 'Thinking… (may take up to 30s on first request)';
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 120000);
           try {
             const res = await fetch('/run', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({task})
+              body: JSON.stringify({task}),
+              signal: controller.signal
             });
+            clearTimeout(timer);
+            if (!res.ok) {
+              el.textContent = 'Server error ' + res.status + ': ' + await res.text();
+              return;
+            }
             const data = await res.json();
             el.textContent = data.answer || JSON.stringify(data);
           } catch (e) {
-            el.textContent = 'Error: ' + e.message;
+            clearTimeout(timer);
+            if (e.name === 'AbortError') {
+              el.textContent = 'Request timed out after 2 minutes. The server may be waking up — please try again.';
+            } else {
+              el.textContent = 'Error: ' + e.message;
+            }
           }
         }
         document.getElementById('inp').addEventListener('keydown', e => {
@@ -612,9 +625,11 @@ def root():
 
 
 @app.post("/run")
-def run_endpoint(request: RunRequest):
+async def run_endpoint(request: RunRequest):
+    import asyncio
     try:
-        answer = run_agent(request.task)
+        loop = asyncio.get_event_loop()
+        answer = await loop.run_in_executor(None, run_agent, request.task)
     except Exception as exc:
         import traceback
         answer = f"Agent error: {type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
