@@ -7,4 +7,4 @@ langchain-google-genai==2.0.8
 langgraph==0.2.60
 google-generativeai==0.8.3
 chromadb==0.5.23
-onnxruntime==1.20.1
+onnxruntime==1.26.0
